@@ -79,6 +79,13 @@ function App() {
     const customId = 'ODA-' + generateShortId();
     const peer = new Peer(customId);
     peer.on('open', (id) => setPeerId(id));
+    peer.on('error', (err) => {
+      console.error('PeerJS Host Hatası:', err);
+      alert('Bağlantı hatası: ' + err.type);
+      setIsMultiplayer(false);
+      setPeerId('');
+    });
+
     peer.on('connection', (connection) => {
       setConn(connection);
       // Bağlantı kurulduğunda host oyunu başlatır
@@ -99,6 +106,12 @@ function App() {
       setConn(connection);
       setupConnListeners(connection);
     });
+    peer.on('error', (err) => {
+      console.error('PeerJS Join Hatası:', err);
+      alert('Bağlantı kurulamadı: ' + err.type);
+      setIsMultiplayer(false);
+    });
+
   };
 
   const setupConnListeners = (connection) => {
@@ -862,7 +875,17 @@ function App() {
         </div>
       )}
 
+
+      {/* FALLBACK: Eğer hiçbir state eşleşmezse siyah ekran kalmasın */}
+      {!['start', 'playing', 'survival', 'gameover'].includes(gameState) && (
+        <div className="overlay-screen">
+          <p>Yükleniyor...</p>
+          <button className="btn" onClick={() => window.location.reload()}>Yenile</button>
+        </div>
+      )}
+
     </div>
+
   );
 }
 
