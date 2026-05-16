@@ -1,226 +1,202 @@
-import React, { useState, useEffect } from 'react';
-import './index.css';
+import React, { useState, useEffect, useRef } from 'react';
+import { Peer } from 'peerjs';
+import './App.css';
 
-const MAX_CAPACITY = 5;
-const START_TIME = 60;
+const App = () => {
+  const [role, setRole] = useState(null);
+  const [roomId, setRoomId] = useState('');
+  const [isJoined, setIsJoined] = useState(false);
+  const [clues, setClues] = useState([]);
+  const [puzzleStep, setPuzzleStep] = useState(1);
+  const [status, setStatus] = useState('Başlatılıyor...');
+  const [connected, setConnected] = useState(false);
+  
+  const peerRef = useRef(null);
+  const connRef = useRef(null);
 
-const INITIAL_ITEMS = [
-  { id: 'child', name: 'Çocuk', size: 3, icon: '🧒', initialCount: 1 },
-  { id: 'spouse', name: 'Eş', size: 3, icon: '🧑', initialCount: 1 },
-  { id: 'water', name: 'Su Şişesi', size: 1, icon: '💧', initialCount: 4 },
-  { id: 'soup', name: 'Çorba', size: 1, icon: '🥫', initialCount: 4 },
-  { id: 'radio', name: 'Radyo', size: 1, icon: '📻', initialCount: 1 },
-  { id: 'medkit', name: 'İlk Yardım', size: 2, icon: '🩹', initialCount: 1 },
-  { id: 'axe', name: 'Balta', size: 2, icon: '🪓', initialCount: 1 },
-  { id: 'mask', name: 'Gaz Maskesi', size: 1, icon: '🤿', initialCount: 2 },
-  { id: 'book', name: 'Kitap', size: 1, icon: '📖', initialCount: 1 },
-];
-
-function App() {
-  const [gameState, setGameState] = useState('start'); // 'start', 'playing', 'won', 'lost'
-  const [timeLeft, setTimeLeft] = useState(START_TIME);
-  const [inventory, setInventory] = useState([]);
-  const [items, setItems] = useState([]);
-
-  // Toplam kullanılan alanı hesaplama
-  const usedCapacity = inventory.reduce((total, item) => total + item.size, 0);
-
-  // Oyunu başlatma
-  const startGame = () => {
-    setGameState('playing');
-    setTimeLeft(START_TIME);
-    setInventory([]);
-    setItems(INITIAL_ITEMS.map(item => ({ ...item, count: item.initialCount })));
-  };
-
-  // Saniye sayacı
   useEffect(() => {
-    let timer;
-    if (gameState === 'playing' && timeLeft > 0) {
-      timer = setInterval(() => {
-        setTimeLeft(prev => prev - 1);
-      }, 1000);
-    } else if (gameState === 'playing' && timeLeft === 0) {
-      setGameState('lost'); // Süre bitti, sığınağa girilmedi
-    }
-    return () => clearInterval(timer);
-  }, [gameState, timeLeft]);
+    if (isJoined && role) {
+      const peerId = role === 'past' ? `antigravity-p-${roomId}` : `antigravity-f-${roomId}`;
+      const peer = new Peer(peerId, {
+        config: { 'iceServers': [{ url: 'stun:stun.l.google.com:19302' }] }
+      });
+      peerRef.current = peer;
 
-  // Eşya ekleme
-  const addToInventory = (item) => {
-    if (usedCapacity + item.size <= MAX_CAPACITY && item.count > 0) {
-      // Envantere ekle
-      const newItem = { ...item, uniqueId: Date.now() + Math.random() };
-      setInventory([...inventory, newItem]);
-      
-      // Mevcut eşya sayısını azalt
-      setItems(items.map(i => 
-        i.id === item.id ? { ...i, count: i.count - 1 } : i
-      ));
+      peer.on('open', () => setStatus('Sistem Çevrimiçi. Bekleniyor...'));
+      peer.on('connection', (conn) => setupConnection(conn));
+      peer.on('error', () => {
+        if (role === 'future') setTimeout(attemptConnection, 3000);
+      });
+      return () => peer.destroy();
+    }
+  }, [isJoined, role, roomId]);
+
+  const attemptConnection = () => {
+    if (!peerRef.current || connected) return;
+    const conn = peerRef.current.connect(`antigravity-p-${roomId}`, { reliable: true });
+    setupConnection(conn);
+  };
+
+  const setupConnection = (conn) => {
+    connRef.current = conn;
+    conn.on('open', () => {
+      setConnected(true);
+      setStatus('BAĞLANDI!');
+    });
+
+    conn.on('data', (data) => {
+      if (data.type === 'next-step') {
+        setPuzzleStep(data.step);
+      } else {
+        setClues((prev) => [...prev, data]);
+      }
+    });
+  };
+
+  const sendClue = (type, value) => {
+    if (connRef.current && connRef.current.open) {
+      connRef.current.send({ type, value });
     }
   };
 
-  // Eşya çıkarma
-  const removeFromInventory = (uniqueId, originalId) => {
-    // Envanterden çıkar
-    setInventory(inventory.filter(item => item.uniqueId !== uniqueId));
-    
-    // Mevcut eşya sayısını artır
-    setItems(items.map(i => 
-      i.id === originalId ? { ...i, count: i.count + 1 } : i
-    ));
+  const nextStep = (step) => {
+    setPuzzleStep(step);
+    sendClue('next-step', step);
   };
 
-  // Sığınağa gir
-  const enterShelter = () => {
-    if (gameState === 'playing') {
-      setGameState('won');
-    }
+  if (!isJoined) {
+    return (
+      <div className="choice-screen" style={{ flexDirection: 'column', background: '#0a0a0c' }}>
+        <h1 className="glitch" data-text="ZAMAN ÖTESİ BAĞLANTI">ZAMAN ÖTESİ BAĞLANTI</h1>
+        <div className="terminal-window">
+          <p>Oda Numarası:</p>
+          <input type="text" value={roomId} onChange={(e) => setRoomId(e.target.value)} style={{ background: 'transparent', border: '1px solid var(--future-accent)', color: 'white', padding: '1rem', width: '100%', textAlign: 'center' }} />
+          <button onClick={() => setIsJoined(true)} style={{ marginTop: '1rem', width: '100%' }}>BAŞLA</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!role) {
+    return (
+      <div className="choice-screen">
+        <div className="choice-side past" onClick={() => setRole('past')}><h1>GEÇMİŞ</h1></div>
+        <div className="choice-side future" onClick={() => setRole('future')}><h1>GELECEK</h1></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`app-container ${role}-view`}>
+      <button onClick={() => nextStep(puzzleStep + 1)} style={{ position: 'fixed', top: '10px', right: '10px', zIndex: 1000, padding: '5px 10px', fontSize: '10px', opacity: 0.5 }}>Aşamayı Atla (Hata Olursa)</button>
+
+      {!connected && (
+        <div className="success-overlay" style={{ background: 'rgba(0,0,0,0.8)' }}>
+          <h2 className="glitch">{status}</h2>
+          {role === 'future' && <button onClick={attemptConnection}>BAĞLANMAYI DENE</button>}
+        </div>
+      )}
+
+      <div className="game-content" style={{ padding: '2rem' }}>
+        {role === 'past' ? (
+          <PastWorkflow step={puzzleStep} onNext={nextStep} sendClue={sendClue} incomingClues={clues} />
+        ) : (
+          <FutureWorkflow step={puzzleStep} onNext={nextStep} sendClue={sendClue} incomingClues={clues} />
+        )}
+      </div>
+    </div>
+  );
+};
+
+const PastWorkflow = ({ step, onNext, sendClue, incomingClues }) => {
+  const [input, setInput] = useState('');
+  
+  const validateClock = () => {
+    const clean = input.replace(/\D/g, '');
+    if (clean === '0420') onNext(2);
+    else alert('Saat tıkırdadı ama açılmadı. Doğru zaman mı? (04:20)');
   };
 
-  // Format the time as MM:SS
-  const formatTime = (seconds) => {
-    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
-    const s = (seconds % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
+  const validateSafe = () => {
+    if (input.replace(/\D/g, '') === '852') onNext(4);
   };
 
   return (
-    <div className="game-container">
-      {/* BAŞLANGIÇ EKRANI */}
-      {gameState === 'start' && (
-        <div className="start-screen">
-          <h1 className="start-title">☢️ 60 SANİYE ☢️</h1>
-          <p className="start-desc">
-            Nükleer sirenler çalıyor! Sığınağa girmeden önce sadece 60 saniyen var.
-            Aileni ve hayatta kalmak için gerekli eşyaları yanına al. Unutma, sığınakta sadece <strong>{MAX_CAPACITY} birimlik</strong> yerin var.
-          </p>
-          <button className="start-btn" onClick={startGame}>OYUNA BAŞLA</button>
+    <div className="game-view past">
+      <h2>AŞAMA {step}</h2>
+      
+      {step === 1 && (
+        <div className="paper-note">
+          <h3>Antika Saat</h3>
+          <p>Zamanı ayarla (04:20):</p>
+          <input type="text" placeholder="04:20" onChange={(e) => setInput(e.target.value)} style={{ padding: '10px', width: '100px' }} />
+          <button onClick={validateClock} style={{ display: 'block', marginTop: '10px' }}>AYARLA</button>
         </div>
       )}
 
-      {/* OYUN İÇİ ARAYÜZ */}
-      {(gameState === 'playing' || gameState === 'won' || gameState === 'lost') && (
-        <>
-          <div className="header">
-            <div className={`timer ${timeLeft <= 10 && gameState === 'playing' ? 'urgent' : ''}`}>
-              {formatTime(timeLeft)}
-            </div>
-            <div className="inventory-status">
-              <div className="capacity-text">
-                Kapasite: {usedCapacity} / {MAX_CAPACITY}
-              </div>
-              <div className="capacity-bar">
-                <div 
-                  className={`capacity-fill ${usedCapacity === MAX_CAPACITY ? 'full' : ''}`} 
-                  style={{ width: `${(usedCapacity / MAX_CAPACITY) * 100}%` }}
-                ></div>
-              </div>
-            </div>
-          </div>
-
-          <div className="main-area">
-            {/* ETRAFTAKİ EŞYALAR */}
-            <div className="items-panel">
-              <h2>Evdeki Eşyalar</h2>
-              <div className="items-grid">
-                {items.map(item => {
-                  const canAdd = usedCapacity + item.size <= MAX_CAPACITY;
-                  const isDisabled = item.count === 0 || !canAdd;
-                  
-                  return (
-                    <div 
-                      key={item.id} 
-                      className={`item-card ${isDisabled ? 'disabled' : ''}`}
-                      onClick={() => !isDisabled && addToInventory(item)}
-                    >
-                      <div className="item-icon">{item.icon}</div>
-                      <div className="item-name">{item.name}</div>
-                      <div className="item-badges">
-                        <span className="badge size">Boyut: {item.size}</span>
-                        <span className="badge count">Adet: {item.count}</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* SIĞINAK ENVANTERİ */}
-            <div className="inventory-panel">
-              <h2>Sığınağa Alınanlar</h2>
-              <div className="inventory-list">
-                {inventory.length === 0 ? (
-                  <div style={{ textAlign: 'center', opacity: 0.5, marginTop: '2rem' }}>
-                    Sığınak henüz boş...
-                  </div>
-                ) : (
-                  inventory.map(item => (
-                    <div key={item.uniqueId} className="inventory-item">
-                      <div className="inventory-item-info">
-                        <span style={{ fontSize: '1.5rem' }}>{item.icon}</span>
-                        <span>{item.name} (B: {item.size})</span>
-                      </div>
-                      <button 
-                        className="remove-btn"
-                        onClick={() => removeFromInventory(item.uniqueId, item.id)}
-                        disabled={gameState !== 'playing'}
-                        title="Çıkar"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-              <button 
-                className="shelter-btn" 
-                onClick={enterShelter}
-                disabled={gameState !== 'playing'}
-              >
-                🚪 SIĞINAĞA GİR
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* OYUN BİTİŞ EKRANI (KAZANMA/KAYBETME) */}
-      {(gameState === 'won' || gameState === 'lost') && (
-        <div className="game-over-screen">
-          {gameState === 'lost' && <div className="nuclear-overlay"></div>}
-          <h1 className={`result-title ${gameState}`}>
-            {gameState === 'won' ? 'BAŞARIYLA SIĞINDIN!' : 'NÜKLEER PATLAMA!'}
-          </h1>
-          <p className="result-desc">
-            {gameState === 'won' 
-              ? `Süre dolmadan sığınağa girmeyi başardın. Sığınağa ${inventory.length} parça eşya/insan indirdin.`
-              : 'Süre doldu ve sığınağa giremeden patlama dalgasına yakalandın.'}
-          </p>
-          
-          <div className="summary-panel">
-            <h3>Sığınağa Getirilenler:</h3>
-            <hr style={{ borderColor: 'rgba(255,255,255,0.1)', margin: '1rem 0' }}/>
-            {inventory.length === 0 ? (
-              <p>Hiçbir şey getiremedin...</p>
-            ) : (
-              <ul>
-                {inventory.map(item => (
-                  <li key={item.uniqueId} style={{ marginBottom: '0.5rem', listStyle: 'none' }}>
-                    {item.icon} {item.name}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          
-          <button className="restart-btn" onClick={startGame}>
-            TEKRAR DENE
-          </button>
+      {step === 2 && (
+        <div className="paper-note">
+          <h3>Tozlu Defter</h3>
+          <p>Gizli bölmeden bir defter çıktı!</p>
+          <p>İsim: <strong>AURELIUS</strong></p>
+          <button onClick={() => sendClue('text', 'AURELIUS')} style={{ marginTop: '10px' }}>İSMİ GELECEĞE GÖNDER</button>
         </div>
       )}
+
+      {step === 3 && (
+        <div className="paper-note">
+          <h3>Kilitli Kasa</h3>
+          <p>Kasanın şifresini gir (Gelecekten ipucu bekle):</p>
+          <input type="text" placeholder="Şifre" onChange={(e) => setInput(e.target.value)} />
+          <button onClick={validateSafe} style={{ display: 'block', marginTop: '10px' }}>KASAYI AÇ</button>
+        </div>
+      )}
+
+      {step === 4 && <div className="success-overlay"><h1>TEBRİKLER!</h1><p>Geçmiş ve Gelecek Birleşti.</p></div>}
+
+      <div style={{ marginTop: '20px' }}>
+        {incomingClues.map((c, i) => <div key={i} className="paper-note" style={{ background: '#e0fbfc', marginBottom: '10px' }}>{c.value}</div>)}
+      </div>
     </div>
   );
-}
+};
+
+const FutureWorkflow = ({ step, onNext, sendClue, incomingClues }) => {
+  const [input, setInput] = useState('');
+
+  return (
+    <div className="game-view future">
+      <h2>FAZ {step}</h2>
+      
+      {step === 1 && (
+        <div className="terminal-window">
+          <p>> Arşiv: Saat 04:20'ye ayarlanmalı.</p>
+          <button onClick={() => sendClue('future-clue', 'Saati 04:20 yap!')}>İPUCU GÖNDER</button>
+        </div>
+      )}
+
+      {step === 2 && (
+        <div className="terminal-window">
+          <p>> Veri kilitli. Mirasçı ismini girin:</p>
+          <input type="text" onChange={(e) => setInput(e.target.value)} style={{ background: 'black', color: 'white', border: '1px solid #00f2ff' }} />
+          <button onClick={() => input.toUpperCase().trim() === 'AURELIUS' && onNext(3)}>ONAYLA</button>
+          <div style={{ marginTop: '20px' }}>
+            <p>Geçmişten Gelen Sinyaller:</p>
+            {incomingClues.filter(c => c.type === 'text').map((c, i) => <p key={i} style={{ color: '#ff00c1' }}>> {c.value}</p>)}
+          </div>
+        </div>
+      )}
+
+      {step === 3 && (
+        <div className="terminal-window">
+          <p>> Koordinatlar Çözüldü: 852</p>
+          <button onClick={() => sendClue('future-clue', 'Kasa Şifresi: 852')}>ŞİFREYİ GÖNDER</button>
+        </div>
+      )}
+
+      {step === 4 && <div className="success-overlay"><h1>GÖREV TAMAMLANDI!</h1></div>}
+    </div>
+  );
+};
 
 export default App;
