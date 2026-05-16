@@ -384,65 +384,82 @@ function App() {
   };
 
   // State Senkronizasyonu (Her işlemden sonra host gönderir)
+  // Güncel state'e her zaman ulaşabilmek için ref kullanıyoruz
+  const suppliesRef = useRef(supplies);
+  const survivorsRef = useRef(survivors);
+  const dayRef = useRef(day);
+  const logsRef = useRef(logs);
+  useEffect(() => { suppliesRef.current = supplies; }, [supplies]);
+  useEffect(() => { survivorsRef.current = survivors; }, [survivors]);
+  useEffect(() => { dayRef.current = day; }, [day]);
+  useEffect(() => { logsRef.current = logs; }, [logs]);
+
   const syncState = (newSupplies, newSurvivors, newDay, newLogs, newEventModal) => {
     setSupplies(newSupplies);
     setSurvivors(newSurvivors);
     setDay(newDay);
     setLogs(newLogs);
+    // Event modal'da fonksiyon referansı olmadığı için direkt set ediyoruz
+    // Eğer newEventModal varsa action'ı string ID olarak saklıyoruz
     setEventModal(newEventModal);
     setLocalReady(false);
     setRemoteReady(false);
     if (conn && isHost) {
-      conn.send({ type: 'state_sync', supplies: newSupplies, survivors: newSurvivors, day: newDay, logs: newLogs, eventModal: newEventModal });
+      // Fonksiyonları serialize etmek için eventModal'dan action'ı çıkar
+      const serializableModal = newEventModal ? {
+        ...newEventModal,
+        options: newEventModal.options.map(opt => ({ ...opt, action: undefined }))
+      } : null;
+      conn.send({ type: 'state_sync', supplies: newSupplies, survivors: newSurvivors, day: newDay, logs: newLogs, eventModal: serializableModal });
+    }
+  };
+
+  // Event seçeneklerini string ID ile temsil ederek stale closure sorununu önlüyoruz
+  // Kullanıcı seçim yapınca bu dispatcher en güncel state'i kullanır
+  const dispatchEventAction = (actionId, extraArg) => {
+    const sup = suppliesRef.current;
+    const surv = survivorsRef.current;
+    const d = dayRef.current;
+    const lg = logsRef.current;
+
+    if (actionId === 'fireGun') {
+      const newSup = { ...sup, ammo: sup.ammo - 1 };
+      const newLogs = [`[Gün ${d}] Silahı ateşleyip haydutları korkutarak kaçırdınız! (-1 Mermi)`, ...lg];
+      syncState(newSup, surv, d, newLogs, null);
+    } else if (actionId === 'hideFromBandits') {
+      let newSup = { ...sup };
+      let newLogs = [...lg];
+      if (Math.random() < 0.5) {
+        newLogs.unshift(`[Gün ${d}] Haydutlar kapıyı kırdı ve erzak çaldılar! (-1 Çorba, -1 Su)`);
+        newSup.soup = Math.max(0, newSup.soup - 1);
+        newSup.water = Math.max(0, newSup.water - 1);
+      } else {
+        newLogs.unshift(`[Gün ${d}] Ses çıkarmadınız. Haydutlar kapıyı zorlayıp vazgeçtiler.`);
+      }
+      syncState(newSup, surv, d, newLogs, null);
+    } else if (actionId === 'tradeAccept') {
+      let newSup = { ...sup, water: sup.water - 1, ammo: sup.ammo + 2 };
+      const newLogs = [`[Gün ${d}] Yaşlı adama su verdiniz. O da masaya 2 Mermi bıraktı.`, ...lg];
+      syncState(newSup, surv, d, newLogs, null);
+    } else if (actionId === 'tradeReject') {
+      const newLogs = [`[Gün ${d}] Yabancıya kapıyı açmadınız. Homurdanarak uzaklaştı.`, ...lg];
+      syncState(sup, surv, d, newLogs, null);
+    } else if (actionId === 'simpleAck') {
+      const newLogs = [`[Gün ${d}] ${extraArg}`, ...lg];
+      syncState(sup, surv, d, newLogs, null);
     }
   };
 
   const executeEventChoiceLocally = (idx) => {
-    if(eventModal && eventModal.options[idx]) {
-      eventModal.options[idx].action();
+    if (eventModal && eventModal.options[idx]) {
+      const opt = eventModal.options[idx];
+      dispatchEventAction(opt.actionId, opt.actionArg);
     }
   };
 
   const handleEventChoice = (idx) => {
     if (isMultiplayer && conn) conn.send({ type: 'action', action: 'eventChoice', choiceIdx: idx });
     executeEventChoiceLocally(idx);
-  };
-
-  // Ortak Event Aksiyonları
-  const fireGun = () => {
-    const newSup = { ...supplies, ammo: supplies.ammo - 1 };
-    const newLogs = [`[Gün ${day}] Silahı ateşleyip haydutları korkutarak kaçırdınız! (-1 Mermi)`, ...logs];
-    syncState(newSup, survivors, day, newLogs, null);
-  };
-
-  const hideFromBandits = () => {
-    let newSup = { ...supplies };
-    let newLogs = [...logs];
-    if (Math.random() < 0.5) {
-      newLogs.unshift(`[Gün ${day}] Haydutlar kapıyı kırdı ve erzak çaldılar! (-1 Çorba, -1 Su)`);
-      newSup.soup = Math.max(0, newSup.soup - 1);
-      newSup.water = Math.max(0, newSup.water - 1);
-    } else {
-      newLogs.unshift(`[Gün ${day}] Ses çıkarmadınız. Haydutlar kapıyı zorlayıp vazgeçtiler.`);
-    }
-    syncState(newSup, survivors, day, newLogs, null);
-  };
-
-  const tradeWithStranger = (accept) => {
-    let newSup = { ...supplies };
-    let newLogs = [...logs];
-    if (accept) {
-      newSup.water -= 1;
-      newSup.ammo += 2;
-      newLogs.unshift(`[Gün ${day}] Yaşlı adama su verdiniz. O da masaya 2 Mermi bıraktı.`);
-    } else {
-      newLogs.unshift(`[Gün ${day}] Yabancıya kapıyı açmadınız. Homurdanarak uzaklaştı.`);
-    }
-    syncState(newSup, survivors, day, newLogs, null);
-  };
-
-  const simpleAck = (msg) => {
-    syncState(supplies, survivors, day, [`[Gün ${day}] ${msg}`, ...logs], null);
   };
 
   // Sonraki Gün
@@ -477,18 +494,19 @@ function App() {
       if (eventType < 0.3) {
         newSupplies.water += 1;
         newSupplies.soup += 1;
+        // actionId kullanıyoruz, fonksiyon referansı değil (stale closure önlemi)
         newEvent = {
           title: 'Sürpriz Paket!',
           msg: 'Kapıya gizemli biri paket bırakmış! (+1 Su, +1 Çorba)',
-          options: [{ label: 'Tamam', condition: true, action: () => simpleAck('Dışarıdan erzak yardımı geldi.') }]
+          options: [{ label: 'Tamam', condition: true, actionId: 'simpleAck', actionArg: 'Dışarıdan erzak yardımı geldi.' }]
         };
       } else if (eventType < 0.65) {
         newEvent = {
           title: 'Haydutlar Geldi!',
           msg: 'Yüzü maskeli adamlar kapıya vuruyor! İçeri girmeye çalışıyorlar.',
           options: [
-            { label: 'Silahla Vur (-1 Mermi)', condition: newSupplies.gun > 0 && newSupplies.ammo > 0, action: fireGun, type: 'action' },
-            { label: 'Sessiz Ol (Saklan)', condition: true, action: hideFromBandits, type: 'danger' }
+            { label: 'Silahla Vur (-1 Mermi)', condition: newSupplies.gun > 0 && newSupplies.ammo > 0, actionId: 'fireGun', type: 'action' },
+            { label: 'Sessiz Ol (Saklan)', condition: true, actionId: 'hideFromBandits', type: 'danger' }
           ]
         };
       } else {
@@ -496,8 +514,8 @@ function App() {
           title: 'Yaşlı Bir Adam',
           msg: 'Bitkin düşmüş yaşlı bir adam kapınızı çalıyor. Karşılığında eşya vereceğini söyleyerek 1 Su istiyor.',
           options: [
-            { label: '1 Su Ver (Kapıyı Aç)', condition: newSupplies.water > 0, action: () => tradeWithStranger(true), type: 'action' },
-            { label: 'Açma (Risk Alma)', condition: true, action: () => tradeWithStranger(false), type: 'danger' }
+            { label: '1 Su Ver (Kapıyı Aç)', condition: newSupplies.water > 0, actionId: 'tradeAccept', type: 'action' },
+            { label: 'Açma (Risk Alma)', condition: true, actionId: 'tradeReject', type: 'danger' }
           ]
         };
       }
