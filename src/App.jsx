@@ -749,12 +749,12 @@ function App() {
         if (ns.expeditionDays >= 3) {
           const carried = ns.carriedItems || { water: 0, soup: 0, medkit: 0, axe: 0, mask: 0, gun: 0 };
           
-          // Eşyaların hayatta kalma oranına etkisi (Maske varsa %95, Silah varsa %90, normalde %70)
-          let baseDeathChance = 0.30;
+          // Eşyaların hayatta kalma oranına etkisi (Maske varsa %90, Silah varsa %85, normalde %60)
+          let baseDeathChance = 0.40; // 0.30'dan 0.40'a çıkarıldı (Daha Zor!)
           if (carried.mask > 0) {
-            baseDeathChance = 0.05;
+            baseDeathChance = 0.10; // Eskiden %5'ti
           } else if (carried.gun > 0) {
-            baseDeathChance = 0.10;
+            baseDeathChance = 0.15; // Eskiden %10'du
           }
 
           const returnChance = Math.random();
@@ -784,10 +784,12 @@ function App() {
             const foundWater = Math.floor(Math.random() * maxScavengeWater);
             const foundSoup = Math.floor(Math.random() * maxScavengeSoup);
             const foundAmmo = Math.random() < maxScavengeAmmo ? 1 : 0;
+            const foundMedkit = Math.random() < 0.12 ? 1 : 0; // %12 şansla İlk Yardım bulabilme!
 
             newSupplies.water += foundWater;
             newSupplies.soup += foundSoup;
             newSupplies.ammo += foundAmmo;
+            newSupplies.medkit += foundMedkit;
 
             // Dayanıklı eşyaların iadesi (Maske, Balta, Silah)
             const returnedItems = [];
@@ -797,6 +799,7 @@ function App() {
 
             let logMsg = `${ns.name} keşiften döndü! (+${foundWater} Su, +${foundSoup} Çorba`;
             if (foundAmmo > 0) logMsg += `, +1 Mermi`;
+            if (foundMedkit > 0) logMsg += `, +1 İlk Yardım Kit`;
             if (returnedItems.length > 0) logMsg += `, ${returnedItems.join(' ve ')} geri getirildi`;
             logMsg += ')';
 
@@ -846,7 +849,7 @@ function App() {
       if (ns.needsWater) ns.daysThirsty++;
       
       if (ns.isSick) {
-        if (Math.random() < 0.20) {
+        if (Math.random() < 0.10) { // %20'den %10'a düşürüldü - Doğal İyileşme Zorlaştı!
           ns.isSick = false;
           ns.daysSick = 0;
           currentLog.push(`${ns.name} kendiliğinden iyileşti!`);
@@ -855,14 +858,14 @@ function App() {
         }
       }
 
-      if (!ns.isSick && Math.random() < 0.05) {
+      if (!ns.isSick && Math.random() < 0.10) { // %5'ten %10'a çıkarıldı - Hastalanma Riski Arttı!
         ns.isSick = true;
         currentLog.push(`${ns.name} hastalandı!`);
       }
 
-      if (ns.daysThirsty >= 3) { ns.isAlive = false; currentLog.push(`💀 ${ns.name} susuzluktan öldü!`); }
-      else if (ns.daysHungry >= 5) { ns.isAlive = false; currentLog.push(`💀 ${ns.name} açlıktan öldü!`); }
-      else if (ns.daysSick >= 6) { ns.isAlive = false; currentLog.push(`💀 ${ns.name} hastalıktan öldü!`); }
+      if (ns.daysThirsty >= 2) { ns.isAlive = false; currentLog.push(`💀 ${ns.name} susuzluktan öldü!`); } // 3 günden 2 güne düşürüldü (Zor!)
+      else if (ns.daysHungry >= 4) { ns.isAlive = false; currentLog.push(`💀 ${ns.name} açlıktan öldü!`); } // 5 günden 4 güne düşürüldü (Zor!)
+      else if (ns.daysSick >= 5) { ns.isAlive = false; currentLog.push(`💀 ${ns.name} hastalıktan öldü!`); } // 6 günden 5 güne düşürüldü (Zor!)
 
       return ns;
     });
