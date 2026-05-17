@@ -173,3 +173,32 @@ input:focus { font-size: 16px; } /* iOS auto-zoom prevent */
 /* Kaydırma çubuğunu gizle (Survival ekranı için) */
 .survival-screen::-webkit-scrollbar { display: none; }
 .survival-screen { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* KAYIT PANELİ NEON STILLERİ */
+@keyframes pulse-blue {
+  0% {
+    box-shadow: 0 0 15px rgba(59, 130, 246, 0.3);
+    border-color: rgba(59, 130, 246, 0.6);
+    transform: scale(1);
+  }
+  100% {
+    box-shadow: 0 0 30px rgba(59, 130, 246, 0.6);
+    border-color: rgba(59, 130, 246, 1);
+    transform: scale(1.02);
+  }
+}
+
+.save-restore-panel {
+  animation: pulse-blue 2s infinite alternate ease-in-out;
+  backdrop-filter: blur(15px);
+  background: rgba(17, 24, 39, 0.85) !important;
+  transition: all 0.3s ease;
+}
+
+.save-restore-panel:hover {
+  animation-play-state: paused;
+  box-shadow: 0 0 35px rgba(59, 130, 246, 0.8);
+  border-color: rgba(59, 130, 246, 1);
+  transform: scale(1.03);
+}
+

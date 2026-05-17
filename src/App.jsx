@@ -72,6 +72,156 @@ function App() {
   const [expeditionTarget, setExpeditionTarget] = useState(null);
   const [expeditionItems, setExpeditionItems] = useState({ water: 0, soup: 0, medkit: 0, axe: 0, mask: 0, gun: 0 });
 
+  // Otomatik Kayıt Stateleri
+  const [hasSave, setHasSave] = useState(false);
+  const [saveDetails, setSaveDetails] = useState(null);
+
+  // Oyun durumunu localStorage'a kaydeder
+  const saveGameToStorage = () => {
+    if (gameStateRef.current !== 'playing' && gameStateRef.current !== 'survival') return;
+
+    const saveObj = {
+      gameState: gameStateRef.current,
+      isMultiplayer,
+      isHost,
+      peerId,
+      joinId,
+      timeLeft,
+      inventory: inventoryRef.current,
+      itemsOnMap: itemsOnMapRef.current,
+      playerPos: playerRef.current,
+      remotePlayerPos: remotePlayerRef.current,
+      day: dayRef.current,
+      survivors: survivorsRef.current,
+      supplies: suppliesRef.current,
+      logs: logsRef.current,
+      eventModal,
+      shelterItems: shelterItemsRef.current
+    };
+    localStorage.setItem('nuclear_survival_save_state', JSON.stringify(saveObj));
+  };
+
+  // State değişimlerini izleyip otomatik kaydetme
+  useEffect(() => {
+    if (gameState === 'playing' || gameState === 'survival') {
+      saveGameToStorage();
+    }
+  }, [gameState, timeLeft, day, supplies, survivors, logs, eventModal, inventory, itemsOnMap]);
+
+  // Sayfa açıldığında veya durum değiştiğinde aktif kaydı sorgulama
+  useEffect(() => {
+    const saved = localStorage.getItem('nuclear_survival_save_state');
+    if (saved) {
+      try {
+        const data = JSON.parse(saved);
+        setHasSave(true);
+        setSaveDetails(data);
+      } catch (e) {
+        setHasSave(false);
+      }
+    } else {
+      setHasSave(false);
+      setSaveDetails(null);
+    }
+  }, [gameState]);
+
+  // Oyun sonlandığında kaydı temizleme
+  useEffect(() => {
+    if (gameState === 'gameover') {
+      localStorage.removeItem('nuclear_survival_save_state');
+    }
+  }, [gameState]);
+
+  // Kayıtlı Oyunu Geri Yükleme Fonksiyonu
+  const restoreSavedGame = () => {
+    const saved = localStorage.getItem('nuclear_survival_save_state');
+    if (!saved) return;
+    try {
+      const data = JSON.parse(saved);
+      
+      // 1. Stateleri Geri Yükleme
+      setIsMultiplayer(data.isMultiplayer);
+      setIsHost(data.isHost);
+      setPeerId(data.peerId);
+      setJoinId(data.joinId);
+      setTimeLeft(data.timeLeft);
+      setInventory(data.inventory);
+      setItemsOnMap(data.itemsOnMap);
+      setPlayerPos(data.playerPos);
+      setRemotePlayerPos(data.remotePlayerPos);
+      setDay(data.day);
+      setSurvivors(data.survivors);
+      setSupplies(data.supplies);
+      setLogs(data.logs);
+      setEventModal(data.eventModal);
+
+      // 2. Ref'leri Güncelleme (Stale closures & game loops için kritik)
+      playerRef.current = data.playerPos;
+      remotePlayerRef.current = data.remotePlayerPos;
+      itemsOnMapRef.current = data.itemsOnMap;
+      inventoryRef.current = data.inventory;
+      shelterItemsRef.current = data.shelterItems || [];
+      suppliesRef.current = data.supplies;
+      survivorsRef.current = data.survivors;
+      dayRef.current = data.day;
+      logsRef.current = data.logs;
+
+      // 3. Bağlantıları Tekrar Kurma
+      if (data.isMultiplayer) {
+        if (data.isHost) {
+          const peer = new Peer(data.peerId);
+          peer.on('open', (id) => setPeerId(id));
+          peer.on('error', (err) => {
+            console.error('PeerJS Host Hatası (Restore):', err);
+            alert('Bağlantı hatası: ' + err.type);
+            setIsMultiplayer(false);
+          });
+          peer.on('connection', (connection) => {
+            setConn(connection);
+            setupConnListeners(connection);
+            connection.on('open', () => {
+              // Oyun zaten aktifse Client bağlandığı an durumu senkronize et
+              if (data.gameState === 'playing') {
+                connection.send({ type: 'start', items: data.itemsOnMap });
+                connection.send({ type: 'timer_sync', time: data.timeLeft });
+              } else if (data.gameState === 'survival') {
+                const serializableModal = data.eventModal ? {
+                  ...data.eventModal,
+                  options: data.eventModal.options.map(opt => ({ ...opt, action: undefined }))
+                } : null;
+                connection.send({ 
+                  type: 'state_sync', 
+                  supplies: data.supplies, 
+                  survivors: data.survivors, 
+                  day: data.day, 
+                  logs: data.logs, 
+                  eventModal: serializableModal 
+                });
+              }
+            });
+          });
+        } else {
+          const peer = new Peer();
+          peer.on('open', () => {
+            const connection = peer.connect(data.joinId);
+            setConn(connection);
+            setupConnListeners(connection);
+          });
+          peer.on('error', (err) => {
+            console.error('PeerJS Join Hatası (Restore):', err);
+            alert('Bağlantı kurulamadı!');
+            setIsMultiplayer(false);
+          });
+        }
+      }
+
+      setGameStateSafe(data.gameState);
+    } catch (e) {
+      console.error('Geri yükleme hatası:', e);
+      alert('Kayıt yüklenemedi.');
+    }
+  };
+
   /* =========================================================
      MULTIPLAYER BAĞLANTI (PEERJS)
      ========================================================= */
@@ -94,7 +244,26 @@ function App() {
       setConn(connection);
       // Bağlantı kurulduğunda host oyunu başlatır
       connection.on('open', () => {
-        setTimeout(() => startGame(true, connection), 1000);
+        // Eğer oyun zaten playing veya survival durumundaysa, startGame ile sıfırlama!
+        if (gameStateRef.current === 'playing') {
+          connection.send({ type: 'start', items: itemsOnMapRef.current });
+          connection.send({ type: 'timer_sync', time: timeLeft });
+        } else if (gameStateRef.current === 'survival') {
+          const serializableModal = eventModal ? {
+            ...eventModal,
+            options: eventModal.options.map(opt => ({ ...opt, action: undefined }))
+          } : null;
+          connection.send({ 
+            type: 'state_sync', 
+            supplies: suppliesRef.current, 
+            survivors: survivorsRef.current, 
+            day: dayRef.current, 
+            logs: logsRef.current,
+            eventModal: serializableModal
+          });
+        } else {
+          setTimeout(() => startGame(true, connection), 1000);
+        }
       });
       setupConnListeners(connection);
     });
@@ -830,6 +999,49 @@ function App() {
           <p className="desc">
             Nükleer sirenler çalıyor! Sığınağa girmeden önce eşyaları topla.
           </p>
+
+          {hasSave && saveDetails && (
+            <div className="save-restore-panel" style={{
+              background: 'rgba(59, 130, 246, 0.15)',
+              border: '2px solid #3b82f6',
+              padding: '1.5rem',
+              borderRadius: '12px',
+              marginBottom: '2rem',
+              maxWidth: '500px',
+              width: '90%',
+              boxShadow: '0 0 20px rgba(59, 130, 246, 0.3)',
+              textAlign: 'center'
+            }}>
+              <h3 style={{ margin: '0 0 0.5rem 0', color: '#60a5fa', fontSize: '1.4rem' }}>💾 Kayıtlı Oyun Bulundu!</h3>
+              <p style={{ margin: '0 0 1rem 0', fontSize: '1.1rem', opacity: 0.9, lineHeight: '1.4' }}>
+                {saveDetails.isMultiplayer ? (
+                  <>🧑‍🤝‍🧑 <strong>Çift Oyunculu (CO-OP)</strong><br />Oda Kodu: <strong style={{ color: '#f59e0b', fontSize: '1.2rem' }}>{saveDetails.isHost ? saveDetails.peerId : saveDetails.joinId}</strong></>
+                ) : (
+                  <>👤 <strong>Tek Oyunculu</strong></>
+                )}
+                <br />
+                {saveDetails.gameState === 'playing' ? (
+                  <span style={{ color: '#10b981' }}>⏱️ Toplama Aşaması - Kalan Süre: {formatTime(saveDetails.timeLeft)}</span>
+                ) : (
+                  <span style={{ color: '#fbbf24' }}>📅 Hayatta Kalma Aşaması - Gün: {saveDetails.day}</span>
+                )}
+              </p>
+              <div style={{ display: 'flex', gap: '0.8rem', justifyContent: 'center' }}>
+                <button className="btn action" onClick={restoreSavedGame} style={{ background: '#2563eb', padding: '0.6rem 1.2rem', fontSize: '1.1rem' }}>
+                  DEVAM ET 🎮
+                </button>
+                <button className="btn warning" onClick={() => {
+                  if (confirm('Kayıtlı oyunu silmek istediğinize emin misiniz?')) {
+                    localStorage.removeItem('nuclear_survival_save_state');
+                    setHasSave(false);
+                    setSaveDetails(null);
+                  }
+                }} style={{ background: '#ef4444', padding: '0.6rem 1.2rem', fontSize: '1.1rem' }}>
+                  KAYDI SİL 🗑️
+                </button>
+              </div>
+            </div>
+          )}
           
           {!peerId && !isMultiplayer && (
             <div className="menu-buttons" style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', justifyContent: 'center' }}>
