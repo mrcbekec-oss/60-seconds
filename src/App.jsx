@@ -175,6 +175,9 @@ function App() {
         if (data.action === 'expedition') executeActionLocally('expedition', data.id, data.extra);
         if (data.action === 'eventChoice') executeEventChoiceLocally(data.choiceIdx);
       }
+      else if (data.type === 'timer_sync') {
+        setTimeLeft(data.time);
+      }
       else if (data.type === 'ready') {
         setRemoteReady(true);
       }
@@ -232,21 +235,24 @@ function App() {
 
   useEffect(() => {
     let timerId;
-    if (gameState === 'playing') {
+    if (gameState === 'playing' && (!isMultiplayer || isHost)) {
       timerId = setInterval(() => {
         setTimeLeft(prev => {
-          if (prev <= 1) {
+          const nextVal = prev <= 1 ? 0 : prev - 1;
+          if (nextVal === 0) {
             clearInterval(timerId);
-            return 0;
           }
-          return prev - 1;
+          if (isMultiplayer && isHost && conn) {
+            conn.send({ type: 'timer_sync', time: nextVal });
+          }
+          return nextVal;
         });
       }, 1000);
     }
     return () => {
       clearInterval(timerId);
     };
-  }, [gameState]);
+  }, [gameState, isMultiplayer, isHost, conn]);
 
   useEffect(() => {
     // Saniye bittiğinde host veya single player kontrolü ele alır
