@@ -68,6 +68,10 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [eventModal, setEventModal] = useState(null);
 
+  // Keşif Setup Modal Stateleri
+  const [expeditionTarget, setExpeditionTarget] = useState(null);
+  const [expeditionItems, setExpeditionItems] = useState({ water: 0, soup: 0, medkit: 0, axe: 0, mask: 0, gun: 0 });
+
   /* =========================================================
      MULTIPLAYER BAĞLANTI (PEERJS)
      ========================================================= */
@@ -115,6 +119,21 @@ function App() {
   };
 
   const setupConnListeners = (connection) => {
+    connection.on('close', () => {
+      alert('Bağlantı kesildi! Başlangıç ekranına dönülüyor.');
+      setConn(null);
+      setIsMultiplayer(false);
+      setGameStateSafe('start');
+    });
+
+    connection.on('error', (err) => {
+      console.error('Bağlantı hatası:', err);
+      alert('Bağlantı koptu!');
+      setConn(null);
+      setIsMultiplayer(false);
+      setGameStateSafe('start');
+    });
+
     connection.on('data', (data) => {
       if (data.type === 'pos') {
         remotePlayerRef.current = { x: data.x, y: data.y };
@@ -127,11 +146,11 @@ function App() {
         setTimeLeft(START_TIME);
       } 
       else if (data.type === 'item_picked') {
-        itemsOnMapRef.current = itemsOnMapRef.current.filter(i => i.uid !== data.uid);
+        itemsOnMapRef.current = (itemsOnMapRef.current || []).filter(i => i.uid !== data.uid);
         setItemsOnMap([...itemsOnMapRef.current]);
       } 
       else if (data.type === 'shelter_enter') {
-        shelterItemsRef.current = [...shelterItemsRef.current, ...data.inv];
+        shelterItemsRef.current = [...(shelterItemsRef.current || []), ...data.inv];
       }
       else if (data.type === 'survival_sync') {
         setSupplies(data.supplies);
@@ -153,7 +172,7 @@ function App() {
         if (data.action === 'feed') executeActionLocally('feed', data.id);
         if (data.action === 'water') executeActionLocally('water', data.id);
         if (data.action === 'heal') executeActionLocally('heal', data.id);
-        if (data.action === 'expedition') executeActionLocally('expedition', data.id);
+        if (data.action === 'expedition') executeActionLocally('expedition', data.id, data.extra);
         if (data.action === 'eventChoice') executeEventChoiceLocally(data.choiceIdx);
       }
       else if (data.type === 'ready') {
@@ -213,7 +232,7 @@ function App() {
 
   useEffect(() => {
     let timerId;
-    if (gameState === 'playing' && (!isMultiplayer || isHost)) {
+    if (gameState === 'playing') {
       timerId = setInterval(() => {
         setTimeLeft(prev => {
           if (prev <= 1) {
@@ -227,7 +246,7 @@ function App() {
     return () => {
       clearInterval(timerId);
     };
-  }, [gameState, isMultiplayer, isHost]);
+  }, [gameState]);
 
   useEffect(() => {
     // Saniye bittiğinde host veya single player kontrolü ele alır
@@ -504,14 +523,21 @@ function App() {
     const eventChance = Math.random();
     if (eventChance < 0.25) {
       const eventType = Math.random();
-      if (eventType < 0.3) {
-        newSupplies.water += 1;
-        newSupplies.soup += 1;
-        // actionId kullanıyoruz, fonksiyon referansı değil (stale closure önlemi)
+      if (eventType < 0.15) { // Şans %30'dan %15'e düşürüldü
+        const giftWater = Math.random() < 0.5 ? 1 : 0;
+        const giftSoup = giftWater === 0 ? 1 : (Math.random() < 0.3 ? 1 : 0); // Genelde sadece 1 eşya, nadiren ikisi birden
+        newSupplies.water += giftWater;
+        newSupplies.soup += giftSoup;
+        
+        let giftText = '';
+        if (giftWater > 0 && giftSoup > 0) giftText = '(+1 Su, +1 Çorba)';
+        else if (giftWater > 0) giftText = '(+1 Su)';
+        else giftText = '(+1 Çorba)';
+
         newEvent = {
           title: 'Sürpriz Paket!',
-          msg: 'Kapıya gizemli biri paket bırakmış! (+1 Su, +1 Çorba)',
-          options: [{ label: 'Tamam', condition: true, actionId: 'simpleAck', actionArg: 'Dışarıdan erzak yardımı geldi.' }]
+          msg: `Kapıya gizemli biri paket bırakmış! ${giftText}`,
+          options: [{ label: 'Tamam', condition: true, actionId: 'simpleAck', actionArg: `Dışarıdan erzak yardımı geldi: ${giftText}` }]
         };
       } else if (eventType < 0.65) {
         newEvent = {
@@ -539,28 +565,100 @@ function App() {
     const shouldNeedFood = (nextDayNum % 5 === 0); 
     const shouldNeedWater = (nextDayNum % 3 === 0); 
 
-    let newSurvivors = survivors.map(s => {
+    let newSurvivors = (survivors || []).map(s => {
       if (!s.isAlive) return s;
       let ns = { ...s };
 
       if (ns.status === 'expedition') {
         ns.expeditionDays++;
         if (ns.expeditionDays >= 3) {
+          const carried = ns.carriedItems || { water: 0, soup: 0, medkit: 0, axe: 0, mask: 0, gun: 0 };
+          
+          // Eşyaların hayatta kalma oranına etkisi (Maske varsa %95, Silah varsa %90, normalde %70)
+          let baseDeathChance = 0.30;
+          if (carried.mask > 0) {
+            baseDeathChance = 0.05;
+          } else if (carried.gun > 0) {
+            baseDeathChance = 0.10;
+          }
+
           const returnChance = Math.random();
-          if (returnChance > 0.3) {
+          const survived = returnChance > baseDeathChance;
+
+          if (survived) {
             ns.status = 'shelter';
             ns.expeditionDays = 0;
-            const foundWater = Math.floor(Math.random() * 3);
-            const foundSoup = Math.floor(Math.random() * 3);
-            const foundAmmo = Math.random() < 0.5 ? 1 : 0; 
+
+            // Taban erzak bulma oranları azaltıldı (en fazla 1 erzak)
+            let maxScavengeWater = 2; // Math.random() * 2 -> 0 veya 1
+            let maxScavengeSoup = 2;  // Math.random() * 2 -> 0 veya 1
+            let maxScavengeAmmo = 0.2;
+            
+            // Balta veya Silah varsa eski yüksek oranlar (+1-2 erzak) tetiklenir
+            if (carried.axe > 0) {
+              maxScavengeWater = 3; // 0-2 arası
+              maxScavengeSoup = 3;  // 0-2 arası
+              maxScavengeAmmo = 0.5;
+            }
+            if (carried.gun > 0) {
+              maxScavengeWater = Math.max(maxScavengeWater, 3);
+              maxScavengeSoup = Math.max(maxScavengeSoup, 3);
+              maxScavengeAmmo = 0.8;
+            }
+
+            const foundWater = Math.floor(Math.random() * maxScavengeWater);
+            const foundSoup = Math.floor(Math.random() * maxScavengeSoup);
+            const foundAmmo = Math.random() < maxScavengeAmmo ? 1 : 0;
+
             newSupplies.water += foundWater;
             newSupplies.soup += foundSoup;
             newSupplies.ammo += foundAmmo;
-            currentLog.push(`${ns.name} keşiften döndü! (+${foundWater} Su, +${foundSoup} Çorba ${foundAmmo > 0 ? ', +1 Mermi' : ''})`);
+
+            // Dayanıklı eşyaların iadesi (Maske, Balta, Silah)
+            const returnedItems = [];
+            if (carried.mask > 0) { newSupplies.mask += carried.mask; returnedItems.push('Gaz Maskesi'); }
+            if (carried.axe > 0) { newSupplies.axe += carried.axe; returnedItems.push('Balta'); }
+            if (carried.gun > 0) { newSupplies.gun += carried.gun; returnedItems.push('Silah'); }
+
+            let logMsg = `${ns.name} keşiften döndü! (+${foundWater} Su, +${foundSoup} Çorba`;
+            if (foundAmmo > 0) logMsg += `, +1 Mermi`;
+            if (returnedItems.length > 0) logMsg += `, ${returnedItems.join(' ve ')} geri getirildi`;
+            logMsg += ')';
+
+            // Keşifte İlk Yardım Kiti kullanımı
+            if (carried.medkit > 0 && ns.isSick) {
+              ns.isSick = false;
+              ns.daysSick = 0;
+              logMsg += ` Keşif sırasında hastalanmıştı ama yanındaki İlk Yardımı kullanarak iyileşti.`;
+            }
+
+            // Keşif sırasında açlık/susuzluk önleme erzakları
+            if (carried.water > 0) {
+              ns.needsWater = false;
+              ns.daysThirsty = 0;
+            }
+            if (carried.soup > 0) {
+              ns.needsFood = false;
+              ns.daysHungry = 0;
+            }
+
+            currentLog.push(logMsg);
           } else {
             ns.isAlive = false;
-            currentLog.push(`⚠️ ${ns.name} keşfe çıktı ve bir daha geri dönmedi...`);
+            // Kaybolan eşyaların log kaydı
+            const lostList = Object.entries(carried)
+              .filter(([_, qty]) => qty > 0)
+              .map(([name, qty]) => `${qty}x ${getItemName(name)}`)
+              .join(', ');
+            
+            const lostMsg = lostList 
+              ? `⚠️ ${ns.name} keşfe çıktı ve geri dönmedi... Yanındaki [${lostList}] de kayboldu.`
+              : `⚠️ ${ns.name} keşfe çıktı ve bir daha geri dönmedi...`;
+            
+            currentLog.push(lostMsg);
           }
+
+          delete ns.carriedItems;
         }
         return ns; 
       }
@@ -620,36 +718,89 @@ function App() {
   }, [gameState, eventModal]);
 
 
-  // Manuel Olay Tetikleyicileri (Ortak)
-  const executeActionLocally = (action, id) => {
-    if (action === 'feed' && supplies.soup > 0) {
-      const newSup = { ...supplies, soup: supplies.soup - 1 };
-      const newSurv = survivors.map(s => s.id === id ? { ...s, needsFood: false, daysHungry: 0 } : s);
-      const newLogs = [`[Gün ${day}] ${survivors.find(s=>s.id===id).name} çorba içti.`, ...logs];
-      if(isHost || !isMultiplayer) syncState(newSup, newSurv, day, newLogs, eventModal);
-    }
-    else if (action === 'water' && supplies.water > 0) {
-      const newSup = { ...supplies, water: supplies.water - 1 };
-      const newSurv = survivors.map(s => s.id === id ? { ...s, needsWater: false, daysThirsty: 0 } : s);
-      const newLogs = [`[Gün ${day}] ${survivors.find(s=>s.id===id).name} su içti.`, ...logs];
-      if(isHost || !isMultiplayer) syncState(newSup, newSurv, day, newLogs, eventModal);
-    }
-    else if (action === 'heal' && supplies.medkit > 0) {
-      const newSup = { ...supplies, medkit: supplies.medkit - 1 };
-      const newSurv = survivors.map(s => s.id === id ? { ...s, isSick: false, daysSick: 0 } : s);
-      const newLogs = [`[Gün ${day}] ${survivors.find(s=>s.id===id).name} tedavi edildi.`, ...logs];
-      if(isHost || !isMultiplayer) syncState(newSup, newSurv, day, newLogs, eventModal);
-    }
-    else if (action === 'expedition') {
-      const newSurv = survivors.map(s => s.id === id ? { ...s, status: 'expedition', expeditionDays: 0 } : s);
-      const newLogs = [`[Gün ${day}] ${survivors.find(s=>s.id===id).name} dışarı keşfe gönderildi.`, ...logs];
-      if(isHost || !isMultiplayer) syncState(supplies, newSurv, day, newLogs, eventModal);
+  // Keşif Helpers
+  const getItemName = (id) => {
+    switch (id) {
+      case 'water': return 'Su';
+      case 'soup': return 'Çorba';
+      case 'medkit': return 'İlk Yardım';
+      case 'radio': return 'Radyo';
+      case 'axe': return 'Balta';
+      case 'mask': return 'Gaz Maskesi';
+      case 'gun': return 'Silah';
+      case 'ammo': return 'Mermi';
+      default: return id;
     }
   };
 
-  const handleAction = (action, id) => {
-    if (isMultiplayer && conn) conn.send({ type: 'action', action, id });
-    executeActionLocally(action, id);
+  const updateExpeditionItem = (key, delta) => {
+    setExpeditionItems(prev => {
+      const nextVal = Math.max(0, (prev[key] || 0) + delta);
+      return { ...prev, [key]: nextVal };
+    });
+  };
+
+  const getExpeditionTotal = () => {
+    return Object.values(expeditionItems).reduce((sum, val) => sum + val, 0);
+  };
+
+  const startExpeditionConfirmed = () => {
+    if (!expeditionTarget) return;
+    handleAction('expedition', expeditionTarget.id, expeditionItems);
+    setExpeditionTarget(null);
+    setExpeditionItems({ water: 0, soup: 0, medkit: 0, axe: 0, mask: 0, gun: 0 });
+  };
+
+  // Manuel Olay Tetikleyicileri (Ortak)
+  const executeActionLocally = (action, id, extra = null) => {
+    const survivor = (survivors || []).find(s => s.id === id);
+    const survivorName = survivor ? survivor.name : 'Biri';
+
+    if (action === 'feed' && (supplies?.soup ?? 0) > 0) {
+      const newSup = { ...supplies, soup: supplies.soup - 1 };
+      const newSurv = (survivors || []).map(s => s.id === id ? { ...s, needsFood: false, daysHungry: 0 } : s);
+      const newLogs = [`[Gün ${day}] ${survivorName} çorba içti.`, ...(logs || [])];
+      if(isHost || !isMultiplayer) syncState(newSup, newSurv, day, newLogs, eventModal);
+    }
+    else if (action === 'water' && (supplies?.water ?? 0) > 0) {
+      const newSup = { ...supplies, water: supplies.water - 1 };
+      const newSurv = (survivors || []).map(s => s.id === id ? { ...s, needsWater: false, daysThirsty: 0 } : s);
+      const newLogs = [`[Gün ${day}] ${survivorName} su içti.`, ...(logs || [])];
+      if(isHost || !isMultiplayer) syncState(newSup, newSurv, day, newLogs, eventModal);
+    }
+    else if (action === 'heal' && (supplies?.medkit ?? 0) > 0) {
+      const newSup = { ...supplies, medkit: supplies.medkit - 1 };
+      const newSurv = (survivors || []).map(s => s.id === id ? { ...s, isSick: false, daysSick: 0 } : s);
+      const newLogs = [`[Gün ${day}] ${survivorName} tedavi edildi.`, ...(logs || [])];
+      if(isHost || !isMultiplayer) syncState(newSup, newSurv, day, newLogs, eventModal);
+    }
+    else if (action === 'expedition') {
+      const items = extra || { water: 0, soup: 0, medkit: 0, axe: 0, mask: 0, gun: 0 };
+      
+      const newSup = { ...supplies };
+      Object.keys(items).forEach(k => {
+        newSup[k] = Math.max(0, (newSup[k] || 0) - (items[k] || 0));
+      });
+
+      const newSurv = (survivors || []).map(s => s.id === id ? { ...s, status: 'expedition', expeditionDays: 0, carriedItems: items } : s);
+      
+      const takenList = Object.entries(items)
+        .filter(([_, qty]) => qty > 0)
+        .map(([name, qty]) => `${qty}x ${getItemName(name)}`)
+        .join(', ');
+      
+      const logMsg = takenList 
+        ? `[Gün ${day}] ${survivorName} yanına [${takenList}] alarak keşfe çıktı.`
+        : `[Gün ${day}] ${survivorName} hiçbir eşya almadan keşfe çıktı.`;
+
+      const newLogs = [logMsg, ...(logs || [])];
+      if(isHost || !isMultiplayer) syncState(newSup, newSurv, day, newLogs, eventModal);
+    }
+  };
+
+  const handleAction = (action, id, extra = null) => {
+    if (isMultiplayer && conn) conn.send({ type: 'action', action, id, extra });
+    executeActionLocally(action, id, extra);
   };
 
 
@@ -778,7 +929,7 @@ function App() {
                 <h2>{eventModal.title}</h2>
                 <p>{eventModal.msg}</p>
                 <div className="event-options">
-                  {eventModal.options.map((opt, i) => (
+                  {(eventModal.options || []).map((opt, i) => (
                     <button 
                       key={i} 
                       className={`btn event-btn ${opt.type || ''}`} 
@@ -788,6 +939,94 @@ function App() {
                       {opt.label}
                     </button>
                   ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* YENİ: Keşif Eşya Seçim Modalı */}
+          {expeditionTarget && (
+            <div className="event-modal">
+              <div className="event-box" style={{ maxWidth: '500px' }}>
+                <h2>🗺️ Keşif Hazırlığı</h2>
+                <p><strong>{expeditionTarget.name}</strong> dışarı keşfe çıkacak. Yanına vermek istediğiniz erzak ve ekipmanları seçin (En fazla 3 adet):</p>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem', margin: '1.5rem 0', textAlign: 'left', background: 'rgba(255,255,255,0.05)', padding: '1rem', borderRadius: '8px' }}>
+                  
+                  {/* SU */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>💧 Su (Mevcut: {supplies?.water ?? 0}):</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '1rem' }} onClick={() => updateExpeditionItem('water', -1)} disabled={expeditionItems.water <= 0}>-</button>
+                      <strong style={{ fontSize: '1.2rem', width: '20px', textAlign: 'center' }}>{expeditionItems.water}</strong>
+                      <button className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '1rem' }} onClick={() => updateExpeditionItem('water', 1)} disabled={expeditionItems.water >= (supplies?.water ?? 0) || getExpeditionTotal() >= 3}>+</button>
+                    </div>
+                  </div>
+
+                  {/* ÇORBA */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>🥫 Çorba (Mevcut: {supplies?.soup ?? 0}):</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '1rem' }} onClick={() => updateExpeditionItem('soup', -1)} disabled={expeditionItems.soup <= 0}>-</button>
+                      <strong style={{ fontSize: '1.2rem', width: '20px', textAlign: 'center' }}>{expeditionItems.soup}</strong>
+                      <button className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '1rem' }} onClick={() => updateExpeditionItem('soup', 1)} disabled={expeditionItems.soup >= (supplies?.soup ?? 0) || getExpeditionTotal() >= 3}>+</button>
+                    </div>
+                  </div>
+
+                  {/* GAZ MASKESİ */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>🤿 Gaz Maskesi (Mevcut: {supplies?.mask ?? 0}):</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '1rem' }} onClick={() => updateExpeditionItem('mask', -1)} disabled={expeditionItems.mask <= 0}>-</button>
+                      <strong style={{ fontSize: '1.2rem', width: '20px', textAlign: 'center' }}>{expeditionItems.mask}</strong>
+                      <button className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '1rem' }} onClick={() => updateExpeditionItem('mask', 1)} disabled={expeditionItems.mask >= (supplies?.mask ?? 0) || getExpeditionTotal() >= 3}>+</button>
+                    </div>
+                  </div>
+
+                  {/* BALTA */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>🪓 Balta (Mevcut: {supplies?.axe ?? 0}):</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '1rem' }} onClick={() => updateExpeditionItem('axe', -1)} disabled={expeditionItems.axe <= 0}>-</button>
+                      <strong style={{ fontSize: '1.2rem', width: '20px', textAlign: 'center' }}>{expeditionItems.axe}</strong>
+                      <button className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '1rem' }} onClick={() => updateExpeditionItem('axe', 1)} disabled={expeditionItems.axe >= (supplies?.axe ?? 0) || getExpeditionTotal() >= 3}>+</button>
+                    </div>
+                  </div>
+
+                  {/* SİLAH */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>🔫 Silah (Mevcut: {supplies?.gun ?? 0}):</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '1rem' }} onClick={() => updateExpeditionItem('gun', -1)} disabled={expeditionItems.gun <= 0}>-</button>
+                      <strong style={{ fontSize: '1.2rem', width: '20px', textAlign: 'center' }}>{expeditionItems.gun}</strong>
+                      <button className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '1rem' }} onClick={() => updateExpeditionItem('gun', 1)} disabled={expeditionItems.gun >= (supplies?.gun ?? 0) || getExpeditionTotal() >= 3}>+</button>
+                    </div>
+                  </div>
+
+                  {/* İLK YARDIM */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>🩹 İlk Yardım (Mevcut: {supplies?.medkit ?? 0}):</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '1rem' }} onClick={() => updateExpeditionItem('medkit', -1)} disabled={expeditionItems.medkit <= 0}>-</button>
+                      <strong style={{ fontSize: '1.2rem', width: '20px', textAlign: 'center' }}>{expeditionItems.medkit}</strong>
+                      <button className="btn" style={{ padding: '0.2rem 0.6rem', fontSize: '1rem' }} onClick={() => updateExpeditionItem('medkit', 1)} disabled={expeditionItems.medkit >= (supplies?.medkit ?? 0) || getExpeditionTotal() >= 3}>+</button>
+                    </div>
+                  </div>
+
+                </div>
+
+                <div style={{ fontSize: '0.9rem', opacity: 0.8, marginBottom: '1.5rem', textAlign: 'left', lineHeight: '1.4' }}>
+                  ℹ️ <strong>Eşya Etkileri:</strong><br/>
+                  • 🤿 Maske: Sağ dönme şansını <strong>%95'e</strong> çıkarır.<br/>
+                  • 🪓 Balta veya 🔫 Silah: Keşiften <strong>daha fazla erzak</strong> getirme şansı sağlar.<br/>
+                  • 🩹 İlk Yardım: Keşifte yaralanma/hastalık olursa <strong>otomatik tedavi</strong> eder.<br/>
+                  • 💧/🥫 Su/Çorba: Keşif boyunca susuzluk/açlığı önler.<br/>
+                  • ⚠️ Maksimum 3 adet eşya seçebilirsiniz.
+                </div>
+
+                <div style={{ display: 'flex', gap: '1rem' }}>
+                  <button className="btn warning" style={{ flex: 1 }} onClick={() => { setExpeditionTarget(null); setExpeditionItems({ water: 0, soup: 0, medkit: 0, axe: 0, mask: 0, gun: 0 }); }}>Vazgeç</button>
+                  <button className="btn action" style={{ flex: 1 }} onClick={startExpeditionConfirmed}>Keşfi Başlat 🗺️</button>
                 </div>
               </div>
             </div>
@@ -808,14 +1047,14 @@ function App() {
             <div className="supplies-panel">
               <h2>Erzaklar</h2>
               <div className="supplies-grid">
-                <div className="supply-item">🥫 Çorba: <strong>{supplies.soup}</strong></div>
-                <div className="supply-item">💧 Su: <strong>{supplies.water}</strong></div>
-                <div className="supply-item">🩹 İlkyardım: <strong>{supplies.medkit}</strong></div>
-                <div className="supply-item">📻 Radyo: <strong>{supplies.radio}</strong></div>
-                <div className="supply-item">🪓 Balta: <strong>{supplies.axe}</strong></div>
-                <div className="supply-item">🤿 Maske: <strong>{supplies.mask}</strong></div>
-                <div className="supply-item highlight">🔫 Silah: <strong>{supplies.gun}</strong></div>
-                <div className="supply-item highlight">🔘 Mermi: <strong>{supplies.ammo}</strong></div>
+                <div className="supply-item">🥫 Çorba: <strong>{supplies?.soup ?? 0}</strong></div>
+                <div className="supply-item">💧 Su: <strong>{supplies?.water ?? 0}</strong></div>
+                <div className="supply-item">🩹 İlkyardım: <strong>{supplies?.medkit ?? 0}</strong></div>
+                <div className="supply-item">📻 Radyo: <strong>{supplies?.radio ?? 0}</strong></div>
+                <div className="supply-item">🪓 Balta: <strong>{supplies?.axe ?? 0}</strong></div>
+                <div className="supply-item">🤿 Maske: <strong>{supplies?.mask ?? 0}</strong></div>
+                <div className="supply-item highlight">🔫 Silah: <strong>{supplies?.gun ?? 0}</strong></div>
+                <div className="supply-item highlight">🔘 Mermi: <strong>{supplies?.ammo ?? 0}</strong></div>
               </div>
             </div>
 
@@ -839,10 +1078,10 @@ function App() {
                     
                     {s.isAlive && s.status !== 'expedition' && (
                       <div className="survivor-actions">
-                        <button onClick={() => handleAction('feed', s.id)} disabled={supplies.soup <= 0 || !s.needsFood || eventModal !== null} title="Yedir">🥫</button>
-                        <button onClick={() => handleAction('water', s.id)} disabled={supplies.water <= 0 || !s.needsWater || eventModal !== null} title="İçir">💧</button>
-                        <button onClick={() => handleAction('heal', s.id)} disabled={supplies.medkit <= 0 || !s.isSick || eventModal !== null} title="İyileştir">🩹</button>
-                        <button onClick={() => handleAction('expedition', s.id)} disabled={eventModal !== null} title="Keşfe Gönder">🗺️</button>
+                        <button onClick={() => handleAction('feed', s.id)} disabled={(supplies?.soup ?? 0) <= 0 || !s.needsFood || eventModal !== null} title="Yedir">🥫</button>
+                        <button onClick={() => handleAction('water', s.id)} disabled={(supplies?.water ?? 0) <= 0 || !s.needsWater || eventModal !== null} title="İçir">💧</button>
+                        <button onClick={() => handleAction('heal', s.id)} disabled={(supplies?.medkit ?? 0) <= 0 || !s.isSick || eventModal !== null} title="İyileştir">🩹</button>
+                        <button onClick={() => { setExpeditionTarget(s); setExpeditionItems({ water: 0, soup: 0, medkit: 0, axe: 0, mask: 0, gun: 0 }); }} disabled={eventModal !== null || expeditionTarget !== null} title="Keşfe Gönder">🗺️</button>
                       </div>
                     )}
                   </div>
